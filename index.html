@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stock Trainer — Live NSE Chart + Market Timings</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#f5f7fb; margin:0; }
+    header { background:#111827; color:white; text-align:center; padding:15px; }
+    main { max-width:1000px; margin:20px auto; padding:0 16px; }
+    .search { position:relative; display:flex; flex-direction:column; gap:8px; }
+    input { padding:10px; border-radius:8px; border:1px solid #ccc; font-size:16px; width:100%; }
+    ul.suggestions { position:absolute; top:45px; left:0; right:0; background:white; border:1px solid #ccc; border-radius:8px; list-style:none; padding:0; margin:0; z-index:10; max-height:150px; overflow-y:auto; }
+    ul.suggestions li { padding:8px 10px; cursor:pointer; }
+    ul.suggestions li:hover { background:#f1f5f9; }
+    button { padding:10px; border:none; background:#111827; color:white; border-radius:8px; cursor:pointer; font-size:15px; }
+    button:hover { background:#1f2937; }
+    iframe { width:100%; height:500px; border:none; border-radius:10px; margin:20px 0; box-shadow:0 3px 10px rgba(0,0,0,0.1); }
+    .info, .liveBox { background:white; padding:15px; border-radius:10px; box-shadow:0 3px 10px rgba(0,0,0,0.1); margin-top:20px; }
+    canvas { width:100%; height:150px; }
+    .price { font-size:26px; font-weight:bold; }
+    .green { color:#16a34a; }
+    .red { color:#dc2626; }
+    .closed { color:#9ca3af; font-weight:bold; }
+  </style>
+</head>
+<body>
+
+<header><h1>📈 Live Indian Stock Trainer</h1></header>
+
+<main>
+  <div class="search">
+    <input type="text" id="symbolInput" placeholder="Search Indian stock (e.g. Reliance, TCS, Infosys)" autocomplete="off">
+    <ul id="suggestions" class="suggestions"></ul>
+    <button id="loadBtn">Load Stock</button>
+  </div>
+
+  <div class="liveBox">
+    <div id="marketStatus" class="closed">Checking market status...</div>
+    <div id="livePrice" class="price">—</div>
+    <canvas id="liveChart"></canvas>
+  </div>
+
+  <div id="chartContainer"></div>
+
+  <div class="info">
+    <h2>Company Info</h2>
+    <div id="infoContent">Search a stock to see details here.</div>
+  </div>
+</main>
+
+<footer style="text-align:center;color:#666;margin-top:15px;">Made for NSE India • Live Chart + Market Status • Powered by TradingView & Twelve Data</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+const API_KEY = "c933f15065e54a7b9d8908b084d72de1";
+
+const input = document.getElementById("symbolInput");
+const suggestions = document.getElementById("suggestions");
+const chartContainer = document.getElementById("chartContainer");
+const infoDiv = document.getElementById("infoContent");
+const livePriceDiv = document.getElementById("livePrice");
+const marketStatusDiv = document.getElementById("marketStatus");
+const ctx = document.getElementById("liveChart").getContext("2d");
+
+let selectedSymbol = "";
+let liveData = [];
+let liveChart;
+let intervalId;
+
+// 🕒 Check if market is open (NSE: 09:15–15:30 IST, Mon–Fri)
+function isMarketOpen() {
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const ist = new Date(utc + 5.5 * 3600000);
+  const day = ist.getDay();
+  const hour = ist.getHours();
+  const minute = ist.getMinutes();
+  const totalMinutes = hour * 60 + minute;
+  const openTime = 9 * 60 + 15;
+  const closeTime = 15 * 60 + 30;
+  const open = (day >= 1 && day <= 5 && totalMinutes >= openTime && totalMinutes <= closeTime);
+  return { open, time: ist.toLocaleTimeString("en-IN") };
+}
+
+function updateMarketStatus() {
+  const { open, time } = isMarketOpen();
+  if (open) {
+    marketStatusDiv.textContent = "🟢 Market Open — " + time + " IST";
+    marketStatusDiv.className = "green";
+  } else {
+    marketStatusDiv.textContent = "🔴 Market Closed — " + time + " IST";
+    marketStatusDiv.className = "closed";
+  }
+  return open;
+}
+
+function createLiveChart() {
+  if (liveChart) liveChart.destroy();
+  liveChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label: 'Live Price',
+        data: [],
+        borderColor: '#2563eb',
+        borderWidth: 2,
+        fill: false,
+        tension: 0.3,
+        pointRadius: 0
+      }]
+    },
+    options: {
+      responsive: true,
+      scales: { x: { display: false }, y: { display: true } },
+      plugins: { legend: { display: false } }
+    }
+  });
+}
+
+input.addEventListener("input", async () => {
+  const query = input.value.trim();
+  if (query.length < 2) {
+    suggestions.innerHTML = "";
+    return;
+  }
+  try {
+    const res = await fetch(`https://api.twelvedata.com/symbol_search?symbol=${query}&apikey=${API_KEY}`);
+    const data = await res.json();
+    if (!data.data) return;
+    suggestions.innerHTML = "";
+    data.data
+      .filter(item => item.exchange === "NSE" || item.exchange === "BSE")
+      .slice(0, 6)
+      .forEach(item => {
+        const li = document.createElement("li");
+        li.textContent = `${item.instrument_name} (${item.symbol})`;
+        li.addEventListener("click", () => {
+          selectedSymbol = item.symbol;
+          input.value = item.instrument_name;
+          suggestions.innerHTML = "";
+        });
+        suggestions.appendChild(li);
+      });
+  } catch (e) { suggestions.innerHTML = ""; }
+});
+
+document.getElementById("loadBtn").addEventListener("click", () => {
+  if (!selectedSymbol) { alert("Select a stock first."); return; }
+  loadStock(selectedSymbol);
+});
+
+async function loadStock(symbol) {
+  clearInterval(intervalId);
+  createLiveChart();
+
+  // TradingView full chart
+  chartContainer.innerHTML = `
+    <iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tradingview_${Date.now()}&symbol=${encodeURIComponent(symbol)}&interval=1&theme=light"
+      allowtransparency="true" allowfullscreen="true"></iframe>
+  `;
+
+  // Load fundamentals
+  infoDiv.innerHTML = "<em>Loading info...</em>";
+  try {
+    const res = await fetch(`https://api.twelvedata.com/fundamental?symbol=${symbol}&apikey=${API_KEY}`);
+    const data = await res.json();
+    if (!data.name) { infoDiv.innerHTML = "⚠️ Info not available."; return; }
+    infoDiv.innerHTML = `
+      <p><b>Name:</b> ${data.name}</p>
+      <p><b>Exchange:</b> ${data.exchange}</p>
+      <p><b>Sector:</b> ${data.sector}</p>
+      <p><b>Market Cap:</b> ${data.market_cap}</p>
+      <p><b>P/E Ratio:</b> ${data.pe_ratio}</p>
+    `;
+  } catch (e) { infoDiv.innerHTML = "Error loading info."; }
+
+  // Real-time updates every 2 sec during market hours
+  async function updateLivePrice() {
+    const open = updateMarketStatus();
+    if (!open) return;
+
+    try {
+      const res = await fetch(`https://api.twelvedata.com/price?symbol=${symbol}&apikey=${API_KEY}`);
+      const data = await res.json();
+      const price = parseFloat(data.price);
+      if (!price) return;
+      const last = liveData[liveData.length - 1];
+      liveData.push(price);
+      if (liveData.length > 30) liveData.shift();
+
+      const now = new Date().toLocaleTimeString("en-IN").split(" ")[0];
+      liveChart.data.labels.push(now);
+      liveChart.data.datasets[0].data = liveData;
+      liveChart.update();
+
+      livePriceDiv.textContent = "₹" + price.toFixed(2);
+      if (last && price > last) livePriceDiv.className = "price green";
+      else if (last && price < last) livePriceDiv.className = "price red";
+      else livePriceDiv.className = "price";
+    } catch (e) {}
+  }
+
+  updateLivePrice();
+  intervalId = setInterval(updateLivePrice, 2000);
+}
+
+// Check market open/close every 30s
+setInterval(updateMarketStatus, 30000);
+updateMarketStatus();
+</script>
+
+</body>
+</html>
